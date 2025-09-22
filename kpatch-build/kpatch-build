@@ -61,6 +61,7 @@ KLP_REPLACE=1
 
 GCC="${CROSS_COMPILE:-}gcc"
 CLANG="${CROSS_COMPILE:-}clang"
+CC_OPTION=""
 LD="${CROSS_COMPILE:-}ld"
 LLD="${CROSS_COMPILE:-}ld.lld"
 READELF="${CROSS_COMPILE:-}readelf"
@@ -380,6 +381,21 @@ clang_version_check() {
 	fi
 
 	return
+}
+
+cc_option_check() {
+	local option="$1"
+	local compiler=""
+
+	if [[ -n "$CONFIG_CC_IS_CLANG" ]]; then
+		compiler="$CLANG"
+	else
+		compiler="$GCC"
+	fi
+
+	if $compiler -Werror "$option" -c -x c /dev/null -o /dev/null 2>/dev/null; then
+		CC_OPTION+=" $option";
+	fi
 }
 
 find_special_section_data() {
@@ -1291,8 +1307,16 @@ declare -a MAKEVARS
 if [[ -n "$CONFIG_CC_IS_CLANG" ]]; then
 	MAKEVARS+=("CC=${KPATCH_CC_PREFIX}${CLANG}")
 	MAKEVARS+=("HOSTCC=clang")
+	if [[ "$ARCH" = "loongarch64" ]]; then
+		cc_option_check "-fno-direct-access-external-data"
+		MAKEVARS+=("KBUILD_CFLAGS_KERNEL+=${CC_OPTION}")
+	fi
 else
 	MAKEVARS+=("CC=${KPATCH_CC_PREFIX}${GCC}")
+	if [[ "$ARCH" = "loongarch64" ]]; then
+		cc_option_check "-mno-direct-extern-access"
+		MAKEVARS+=("KBUILD_CFLAGS_KERNEL+=${CC_OPTION}")
+	fi
 fi
 
 if [[ -n "$CONFIG_LD_IS_LLD" ]]; then
