@@ -1288,6 +1288,10 @@ if [[ "$ARCH" = "s390x" ]]; then
 	! kernel_version_gte 6.10.0 && ARCH_KCFLAGS+=" -fPIE"
 fi
 
+if [[ "$ARCH" = "loongarch64" ]]; then
+	ARCH_KCFLAGS="-fPIC"
+fi
+
 export KCFLAGS="-I$DATADIR/patch -ffunction-sections -fdata-sections \
 		$ARCH_KCFLAGS $DEBUG_KCFLAGS"
 
