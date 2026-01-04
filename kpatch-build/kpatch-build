@@ -61,7 +61,6 @@ KLP_REPLACE=1
 
 GCC="${CROSS_COMPILE:-}gcc"
 CLANG="${CROSS_COMPILE:-}clang"
-CC_OPTION=""
 LD="${CROSS_COMPILE:-}ld"
 LLD="${CROSS_COMPILE:-}ld.lld"
 READELF="${CROSS_COMPILE:-}readelf"
@@ -318,6 +317,17 @@ find_core_symvers() {
 	[[ -e "$SYMVERSFILE" ]]
 }
 
+cc_option_check() {
+	local compiler="$1"
+	local option="$2"
+
+	if "$compiler" -Werror "$option" -c -x c /dev/null -o /dev/null 2>/dev/null; then
+		return 0
+	fi
+
+	return 1
+}
+
 gcc_version_from_file() {
 	"$READELF" -p .comment "$1" | grep -m 1 -o 'GCC:.*'
 }
@@ -338,6 +348,11 @@ gcc_version_check() {
 		warn "gcc >= 4.8 required for -pg -ffunction-settings"
 		echo "gcc output: $out"
 		return 1
+	fi
+
+	if [[ "$ARCH" = "loongarch64" ]]; then
+		cc_option_check "$GCC" "-mno-direct-extern-access" || \
+			die "gcc version ($gccver) doesn't support -mno-direct-extern-access"
 	fi
 
 	out="$("$GCC" -c -gz=none -o "$o" "$c" 2>&1)"
@@ -370,6 +385,11 @@ clang_version_check() {
 	clangver=$("$CLANG" --version | grep -m 1 -Eo 'clang version [0-9.]+')
 	kclangver="$(clang_version_from_file "$target")"
 
+	if [[ "$ARCH" = "loongarch64" ]]; then
+		cc_option_check "$CLANG" "-fno-direct-access-external-data" || \
+			die "clang version ($clangver) doesn't support -fno-direct-access-external-data"
+	fi
+
 	# ensure clang version matches that used to build the kernel
 	if [[ "$clangver" != "$kclangver" ]]; then
 		warn "clang/kernel version mismatch"
@@ -381,21 +401,6 @@ clang_version_check() {
 	fi
 
 	return
-}
-
-cc_option_check() {
-	local option="$1"
-	local compiler=""
-
-	if [[ -n "$CONFIG_CC_IS_CLANG" ]]; then
-		compiler="$CLANG"
-	else
-		compiler="$GCC"
-	fi
-
-	if $compiler -Werror "$option" -c -x c /dev/null -o /dev/null 2>/dev/null; then
-		CC_OPTION+=" $option";
-	fi
 }
 
 find_special_section_data() {
@@ -1279,6 +1284,7 @@ remove_patches
 cp -LR "$DATADIR/patch" "$TEMPDIR" || die
 chmod -R u+rw "$TEMPDIR" || die
 
+declare -a ARCH_MAKEVARS
 if [[ "$ARCH" = "ppc64le" ]]; then
 	ARCH_KCFLAGS="-mcmodel=large -fplugin=$PLUGINDIR/ppc64le-plugin.so"
 fi
@@ -1290,6 +1296,11 @@ fi
 
 if [[ "$ARCH" = "loongarch64" ]]; then
 	ARCH_KCFLAGS="-fPIC"
+	if [[ -n "$CONFIG_CC_IS_CLANG" ]]; then
+		ARCH_MAKEVARS+=("KBUILD_CFLAGS_KERNEL+=-fno-direct-access-external-data")
+	else
+		ARCH_MAKEVARS+=("KBUILD_CFLAGS_KERNEL+=-mno-direct-extern-access")
+	fi
 fi
 
 export KCFLAGS="-I$DATADIR/patch -ffunction-sections -fdata-sections \
@@ -1311,16 +1322,8 @@ declare -a MAKEVARS
 if [[ -n "$CONFIG_CC_IS_CLANG" ]]; then
 	MAKEVARS+=("CC=${KPATCH_CC_PREFIX}${CLANG}")
 	MAKEVARS+=("HOSTCC=clang")
-	if [[ "$ARCH" = "loongarch64" ]]; then
-		cc_option_check "-fno-direct-access-external-data"
-		MAKEVARS+=("KBUILD_CFLAGS_KERNEL+=${CC_OPTION}")
-	fi
 else
 	MAKEVARS+=("CC=${KPATCH_CC_PREFIX}${GCC}")
-	if [[ "$ARCH" = "loongarch64" ]]; then
-		cc_option_check "-mno-direct-extern-access"
-		MAKEVARS+=("KBUILD_CFLAGS_KERNEL+=${CC_OPTION}")
-	fi
 fi
 
 if [[ -n "$CONFIG_LD_IS_LLD" ]]; then
@@ -1333,7 +1336,7 @@ fi
 
 # $TARGETS used as list, no quotes.
 # shellcheck disable=SC2086
-make "${MAKEVARS[@]}" "-j$CPUS" $TARGETS 2>&1 | logger || die
+make "${ARCH_MAKEVARS[@]}" "${MAKEVARS[@]}" "-j$CPUS" $TARGETS 2>&1 | logger || die
 
 # Save original module symvers
 cp -f "$BUILDDIR/Module.symvers" "$TEMPDIR/Module.symvers" || die
@@ -1346,7 +1349,7 @@ export KPATCH_GCC_SRCDIR="$BUILDDIR"
 save_env
 # $TARGETS used as list, no quotes.
 # shellcheck disable=SC2086
-KBUILD_MODPOST_WARN=1 make "${MAKEVARS[@]}" "-j$CPUS" $TARGETS 2>&1 | logger || die
+KBUILD_MODPOST_WARN=1 make "${ARCH_MAKEVARS[@]}" "${MAKEVARS[@]}" "-j$CPUS" $TARGETS 2>&1 | logger || die
 
 # source.c:(.section+0xFF): undefined reference to `symbol'
 grep "undefined reference" "$LOGFILE" | sed -r "s/^.*\`(.*)'$/\\1/" \
